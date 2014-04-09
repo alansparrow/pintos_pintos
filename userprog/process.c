@@ -18,8 +18,11 @@
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 
+#define DEFAULT_VALUE 5
+
 static thread_func start_process NO_RETURN;
-static bool load (const char *cmdline, void (**eip) (void), void **esp);
+static bool load (const char *file_name, void (**eip) (void), void **esp, char *cmd_line);
+bool push_args_onto_stack(void **esp, char *cmd_line);
 
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
@@ -59,7 +62,16 @@ start_process (void *file_name_)
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
-  success = load (file_name, &if_.eip, &if_.esp);
+
+  /* Save cmd line */
+  char *cmd_line = malloc(sizeof(char) * strlen(file_name)+1);
+  memcpy(cmd_line, file_name, strlen(file_name)+1);
+
+  /* Get only file name */
+  char *tmp_ptr;
+  file_name = strtok_r(file_name, " ", &tmp_ptr);
+
+  success = load (file_name, &if_.eip, &if_.esp, cmd_line);
 
   /* If load failed, quit. */
   palloc_free_page (file_name);
@@ -72,6 +84,7 @@ start_process (void *file_name_)
      arguments on the stack in the form of a `struct intr_frame',
      we just point the stack pointer (%esp) to our stack frame
      and jump to it. */
+  hex_dump(if_.esp, if_.esp, PHYS_BASE - if_.esp, true);
   asm volatile ("movl %0, %%esp; jmp intr_exit" : : "g" (&if_) : "memory");
   NOT_REACHED ();
 }
@@ -195,7 +208,7 @@ struct Elf32_Phdr
 #define PF_W 2          /* Writable. */
 #define PF_R 4          /* Readable. */
 
-static bool setup_stack (void **esp);
+static bool setup_stack (void **esp, char *cmd_line);
 static bool validate_segment (const struct Elf32_Phdr *, struct file *);
 static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
                           uint32_t read_bytes, uint32_t zero_bytes,
@@ -206,7 +219,8 @@ static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
    and its initial stack pointer into *ESP.
    Returns true if successful, false otherwise. */
 bool
-load (const char *file_name, void (**eip) (void), void **esp) 
+load (const char *file_name, void (**eip) (void), void **esp,
+      char *cmd_line) 
 {
   struct thread *t = thread_current ();
   struct Elf32_Ehdr ehdr;
@@ -302,7 +316,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
     }
 
   /* Set up stack. */
-  if (!setup_stack (esp))
+  if (!setup_stack (esp, cmd_line))
     goto done;
 
   /* Start address. */
@@ -427,7 +441,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 /* Create a minimal stack by mapping a zeroed page at the top of
    user virtual memory. */
 static bool
-setup_stack (void **esp) 
+setup_stack (void **esp, char *cmd_line) 
 {
   uint8_t *kpage;
   bool success = false;
@@ -441,6 +455,8 @@ setup_stack (void **esp)
       else
         palloc_free_page (kpage);
     }
+
+  success = push_args_onto_stack(esp, cmd_line);
   return success;
 }
 
@@ -462,4 +478,84 @@ install_page (void *upage, void *kpage, bool writable)
      address, then map our page there. */
   return (pagedir_get_page (t->pagedir, upage) == NULL
           && pagedir_set_page (t->pagedir, upage, kpage, writable));
+}
+
+
+/* Push args onto stack */
+bool push_args_onto_stack(void **esp, char *cmd_line)
+{
+  int i = 0;
+  int count = 0;
+  int bound = DEFAULT_VALUE;
+  char *token = NULL;
+  char *save_ptr = NULL;
+  char **argv = malloc(sizeof(char *) * bound);
+  
+  char *file_name = strtok_r(cmd_line, " ", &save_ptr);
+  
+  if (!argv)
+    return false;
+  
+  for (token = (char *) file_name;
+       token != NULL;
+       token = strtok_r(NULL, " ", &save_ptr)) {
+    printf("\n%s\n", token);
+    *esp -= strlen(token) + 1;
+    /* Save address of args */
+    argv[count++] = *esp;
+    
+    if (argv >= bound) {
+      bound = bound * 2;
+      argv = realloc(argv, sizeof(char *) * bound);
+      if (!argv)
+	return false;
+    }
+    
+    /* Copy args into stack, +1 for NULL */
+    memcpy(*esp, token, strlen(token) + 1);
+  }
+  
+  /* Last args is 0 */
+  argv[count] = 0;
+
+  /* Align to word size */
+  i = (size_t) *esp % 4;
+  /* If i != 0 */
+  if (i) {
+    *esp -= i;
+    /* This function copy content from this address to that address
+       so if you want to copy argv[count], you provide its address */
+    memcpy(*esp, &argv[count], i);
+  }
+
+  /* Push each argv[i](pointer to arg) onto stack */
+  for (i = count; i >= 0; i--) {
+    *esp -= sizeof(char *);
+    /* Copy argv[i] by providing its address */
+    memcpy(*esp, &argv[i], sizeof(char *));
+  }
+
+  /* Push argv */
+
+  /* Get address of argv */
+  token = *esp;
+  *esp -= sizeof(char **);
+  /* This function copy content from this address to that address
+     so if you want to copy token, you provide token's address */
+  memcpy(*esp, &token, sizeof(char **));
+
+  /* Push argv */
+  *esp -= sizeof(int);
+  memcpy(*esp, &count, sizeof(int));
+
+  /* Push fake return address */
+  *esp -= sizeof(void *);
+  /* This function copy content from this address to that address
+     so if you want to copy argv[count], you provide its address */
+  memcpy(*esp, &argv[count], sizeof(void *));
+
+  /* Free argv */
+  free(argv);
+
+  return true;
 }
