@@ -11,6 +11,7 @@
 #include "threads/switch.h"
 #include "threads/synch.h"
 #include "threads/vaddr.h"
+#include "userprog/syscall.h"
 #ifdef USERPROG
 #include "userprog/process.h"
 #endif
@@ -19,6 +20,10 @@
    Used to detect stack overflow.  See the big comment at the top
    of thread.h for details. */
 #define THREAD_MAGIC 0xcd6abf4b
+
+/* 0 for input, 1 for output */
+#define INIT_FD 2
+#define INIT_PARENT -1
 
 /* List of processes in THREAD_READY state, that is, processes
    that are ready to run but not actually running. */
@@ -205,6 +210,26 @@ thread_create (const char *name, int priority,
   sf->ebp = 0;
 
   intr_set_level (old_level);
+  
+  struct thread *cur = thread_current();
+
+  /* Add this process to its parent's child list */
+  t->parent = cur->tid;
+
+  /* Setup new child process struct and add to this current process */
+
+  struct child_process *cp = malloc(sizeof(struct child_process));
+  if (cp) {
+    cp->pid = t->tid;
+    cp->load_status = NOT_LOADED;
+    cp->wait_status = false;
+    cp->finish_status = false;
+    sema_init(&cp->load_sema, 0);
+    sema_init(&cp->exit_sema, 0);
+    list_push_back(&cur->children_list, &cp->elem);
+  }
+
+  t->child_process = cp;
 
   /* Add to run queue. */
   thread_unblock (t);
@@ -298,6 +323,9 @@ thread_exit (void)
      and schedule another process.  That process will destroy us
      when it calls thread_schedule_tail(). */
   intr_disable ();
+
+  /* Release all locks held by this process */
+  release_locks();
   list_remove (&thread_current()->allelem);
   thread_current ()->status = THREAD_DYING;
   schedule ();
@@ -470,6 +498,18 @@ init_thread (struct thread *t, const char *name, int priority)
   t->priority = priority;
   t->magic = THREAD_MAGIC;
   list_push_back (&all_list, &t->allelem);
+
+  /* Init new thread */
+  t->exec_file = NULL;
+  
+  list_init(&t->children_list);
+  list_init(&t->file_list);
+  list_init(&t->lock_list);
+  
+  t->fd = INIT_FD;
+  t->child_process = NULL;
+  t->parent = INIT_PARENT;
+  
 }
 
 /* Allocates a SIZE-byte frame at the top of thread T's stack and
@@ -585,3 +625,44 @@ allocate_tid (void)
 /* Offset of `stack' member within `struct thread'.
    Used by switch.S, which can't figure it out on its own. */
 uint32_t thread_stack_ofs = offsetof (struct thread, stack);
+
+/* 
+   Check if a process is alive, used by child process 
+   to notify parent when exit
+*/
+bool parent_alive(int pid)
+{
+  bool result = false;
+
+  struct list_elem *e = NULL;
+  struct thread *t = NULL;
+  
+  for (e = list_begin(&all_list);
+       e != list_end(&all_list);
+       e = list_next(e)) {
+    t = list_entry(e, struct thread, allelem);
+    if (t->tid == pid)
+      result = true;
+  }
+
+  return result;
+}
+
+/* Release all locks this thread is holding */
+void release_locks(void)
+{
+  struct thread *t = thread_current();
+  struct list_elem *e = NULL;
+  struct lock *lk = NULL;
+
+  for (e = list_begin(&t->lock_list);
+       e != list_end(&t->lock_list);
+       e = list_next(e)) {
+    lk = list_entry(e, struct lock, elem);
+
+    lock_release(lk);
+    /* Remove it from lock list of this process */
+    list_remove(&lk->elem);
+  }
+}
+

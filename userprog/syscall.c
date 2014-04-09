@@ -403,5 +403,7 @@ void check_buffer(void *buf, unsigned size)
 */
 void check_string(const void *str)
 {
-  
+  int i = 0;
+  for (i = 0; i < strlen(str); i++)
+    check_page_fault(str+i);
 }

@@ -284,12 +284,16 @@ load (const char *file_name, void (**eip) (void), void **esp,
   process_activate ();
 
   /* Open executable file. */
+  lock_acquire(&file_lock);
   file = filesys_open (file_name);
   if (file == NULL) 
     {
       printf ("load: %s: open failed\n", file_name);
       goto done; 
     }
+  /* Deny to write to this file */
+  file_deny_write(file);
+  t->exec_file = file;
 
   /* Read and verify executable header. */
   if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
@@ -374,7 +378,7 @@ load (const char *file_name, void (**eip) (void), void **esp,
 
  done:
   /* We arrive here whether the load is successful or not. */
-  file_close (file);
+  lock_release(&file_lock);
   return success;
 }
 
@@ -547,7 +551,6 @@ bool push_args_onto_stack(void **esp, char *cmd_line)
   for (token = (char *) file_name;
        token != NULL;
        token = strtok_r(NULL, " ", &save_ptr)) {
-    printf("\n%s\n", token);
     *esp -= strlen(token) + 1;
     /* Save address of args */
     argv[count++] = *esp;
@@ -699,8 +702,10 @@ struct file* process_get_file(int fd)
        e != list_end(&t->file_list);
        e = list_next(e)) {
     pf = list_entry(e, struct process_file, elem);
-    if (fd == pf->fd)
+    if (fd == pf->fd) {
       result = pf->file;
+      return result;
+    }
   }
 
   return result;
