@@ -20,7 +20,7 @@ static void syscall_handler (struct intr_frame *);
 void check_address(const void *addr);
 void check_page_fault(const void *addr);
 /* Get arguments from stack provided */
-void get_arguments(void *esp, int *arg, int count);
+void get_arguments(struct intr_frame *f, int *arg, int count);
 /* Check if the buffer is in user memory */
 void check_buffer(void *buf, unsigned size);
 void check_string(const void *str);
@@ -62,13 +62,13 @@ syscall_handler (struct intr_frame *f UNUSED)
 
   case SYS_EXIT:
     /* Get status */
-    get_arguments(esp, arg, 1);
+    get_arguments(f, arg, 1);
     exit(arg[0]);
     break;
 
   case SYS_EXEC:
     /* Get cmd line */
-    get_arguments(esp, arg, 1);
+    get_arguments(f, arg, 1);
     check_page_fault((const void*) arg[0]);
     check_string((const void *) arg[0]);
     f->eax = exec((const char *) arg[0]);
@@ -76,13 +76,13 @@ syscall_handler (struct intr_frame *f UNUSED)
 
   case SYS_WAIT:
     /* Get PID */
-    get_arguments(esp, arg, 1);
+    get_arguments(f, arg, 1);
     f->eax = wait(arg[0]);
     break;
     
   case SYS_CREATE:
     /* Get file name, size */
-    get_arguments(esp, arg, 2);
+    get_arguments(f, arg, 2);
     check_page_fault((const void*) arg[0]);
     check_string((const void *) arg[0]);
     f->eax = create((const char *) arg[0], (unsigned) arg[1]);
@@ -90,7 +90,7 @@ syscall_handler (struct intr_frame *f UNUSED)
 
   case SYS_REMOVE:
     /* Get file name */
-    get_arguments(esp, arg, 1);
+    get_arguments(f, arg, 1);
     check_page_fault((const void*) arg[0]);    
     check_string((const void *) arg[0]);
     f->eax = remove((const char *) arg[0]);
@@ -98,21 +98,21 @@ syscall_handler (struct intr_frame *f UNUSED)
 
   case SYS_OPEN:
     /* Get file name */
-    get_arguments(esp, arg, 1);
+    get_arguments(f, arg, 1);
     check_page_fault((const void*) arg[0]);
     check_string((const void *) arg[0]);
     f->eax = open((const char *) arg[0]);
     break;
   case SYS_CLOSE:
     /* Get file descriptor */
-    get_arguments(esp, arg, 1);
+    get_arguments(f, arg, 1);
     close(arg[0]);
     break;
 
 
   case SYS_READ:
     /* Get file descriptor, buffer, and size */
-    get_arguments(esp, arg, 3);
+    get_arguments(f, arg, 3);
     check_page_fault((const void *) arg[1]);
 
     /* Check if this buffer is in user memory */
@@ -121,7 +121,7 @@ syscall_handler (struct intr_frame *f UNUSED)
     break;
   case SYS_WRITE:
     /* Get file descriptor, buffer, and size */
-    get_arguments(esp, arg, 3);
+    get_arguments(f, arg, 3);
     check_page_fault((const void *) arg[1]);
     check_buffer((void *) arg[1], (unsigned) arg[2]);
     f->eax = write(arg[0], (const void *) arg[1], (unsigned) arg[2]);
@@ -129,20 +129,20 @@ syscall_handler (struct intr_frame *f UNUSED)
 
   case SYS_FILESIZE:
     /* Get file name */
-    get_arguments(esp, arg, 1);
+    get_arguments(f, arg, 1);
     f->eax = filesize(arg[0]);
     break;
 
 
   case SYS_SEEK:
     /* Get file descriptor and position */
-    get_arguments(esp, arg, 2);
+    get_arguments(f, arg, 2);
     seek(arg[0], (unsigned) arg[1]);
     break;
 
   case SYS_TELL:
     /* Get file descriptor */
-    get_arguments(esp, arg, 1);
+    get_arguments(f, arg, 1);
     f->eax = tell(arg[0]);
     break;
     
@@ -371,15 +371,14 @@ void check_page_fault(const void *addr)
 }
 
 /* Get arguments from stack provided */
-void get_arguments(void *esp, int *arg, int count)
+void get_arguments(struct intr_frame *f, int *arg, int count)
 {
   int i = 0;
   int *ptr = NULL;
 
   /* Ignore system call num */
-  esp += 1;
   for (i = 0; i < count; i++) {
-    ptr = (int *) esp + i;
+    ptr = (int *) f->esp + i + 1;
     check_address((const void *) ptr);
     arg[i] = *ptr;
   }

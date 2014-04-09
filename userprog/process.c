@@ -42,6 +42,9 @@ process_execute (const char *file_name)
   if (fn_copy == NULL)
     return TID_ERROR;
   strlcpy (fn_copy, file_name, PGSIZE);
+  
+  char *ptr_tmp = NULL;
+  file_name = strtok_r((char *) file_name, " ", &ptr_tmp);
 
   /* Create a new thread to execute FILE_NAME. */
   tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
@@ -76,6 +79,7 @@ start_process (void *file_name_)
   success = load (file_name, &if_.eip, &if_.esp, cmd_line);
 
   struct thread *t = thread_current();
+  
   if (success)
     t->child_process->load_status = LOAD_SUCCESS;
   else
