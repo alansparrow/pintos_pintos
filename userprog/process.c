@@ -17,8 +17,10 @@
 #include "threads/palloc.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
+#include "userprog/syscall.h"
 
 #define DEFAULT_VALUE 5
+#define ALL_FILE -1
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *file_name, void (**eip) (void), void **esp, char *cmd_line);
@@ -73,6 +75,14 @@ start_process (void *file_name_)
 
   success = load (file_name, &if_.eip, &if_.esp, cmd_line);
 
+  struct thread *t = thread_current();
+  if (success)
+    t->child_process->load_status = LOAD_SUCCESS;
+  else
+    t->child_process->load_status = LOAD_FAIL;
+
+  sema_up(&t->child_process->load_sema);
+
   /* If load failed, quit. */
   palloc_free_page (file_name);
   if (!success) 
@@ -84,7 +94,7 @@ start_process (void *file_name_)
      arguments on the stack in the form of a `struct intr_frame',
      we just point the stack pointer (%esp) to our stack frame
      and jump to it. */
-  hex_dump(if_.esp, if_.esp, PHYS_BASE - if_.esp, true);
+  //hex_dump(if_.esp, if_.esp, PHYS_BASE - if_.esp, true);
   asm volatile ("movl %0, %%esp; jmp intr_exit" : : "g" (&if_) : "memory");
   NOT_REACHED ();
 }
@@ -101,7 +111,26 @@ start_process (void *file_name_)
 int
 process_wait (tid_t child_tid UNUSED) 
 {
-  return -1;
+  int exit_status = -1;
+
+  struct child_process *cp = get_child_process(child_tid);
+  if (!cp) 
+    return ERROR_CODE;
+  
+  /* Don't wait twice */
+  if (cp->wait_status)
+    return ERROR_CODE;
+
+  cp->wait_status = true;
+  
+  if (!cp->finish_status)
+    sema_down(&cp->exit_sema);
+  
+  exit_status = cp->exit_status;
+  
+  remove_child_process(cp);
+  
+  return exit_status;
 }
 
 /* Free the current process's resources. */
@@ -110,6 +139,21 @@ process_exit (void)
 {
   struct thread *cur = thread_current ();
   uint32_t *pd;
+
+  /* Firstly, close all files opened by this process */
+  lock_acquire(&file_lock);
+  process_close_file(ALL_FILE);
+  lock_release(&file_lock);
+
+  /* Remove all child processes */
+  remove_all_child();
+
+  /* Notify its parent it finished */
+  if (parent_alive(cur->parent) &&
+      cur->child_process) {
+    cur->child_process->finish_status = true;
+    sema_up(&cur->child_process->exit_sema);
+  }
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
@@ -558,4 +602,124 @@ bool push_args_onto_stack(void **esp, char *cmd_line)
   free(argv);
 
   return true;
+}
+
+/* Remove a single child process */
+void remove_child_process(struct child_process *cp)
+{
+  list_remove(&cp->elem);
+  free(cp);
+}
+
+/* Remove all child processes, used when a parent exit */
+void remove_all_child(void)
+{
+  struct thread *t = thread_current();
+  struct list_elem *e = NULL;
+  struct child_process *cp = NULL;
+
+  for (e = list_begin(&t->children_list);
+       e != list_end(&t->children_list);
+       e = list_next(e)) {
+    cp = list_entry(e, struct child_process, elem);
+    list_remove(&cp->elem);
+    free(cp);
+  }
+}
+
+/* Get child process with pid provided */
+struct child_process *get_child_process(int pid)
+{
+  struct thread *t = thread_current();
+  struct list_elem *e = NULL;
+  struct child_process *cp = NULL;
+
+  for (e = list_begin(&t->children_list);
+       e != list_end(&t->children_list);
+       e = list_next(e)) {
+    cp = list_entry(e, struct child_process, elem);
+    if (pid == cp->pid)
+      return cp;
+  }
+  
+  return NULL;
+}
+
+/* Add child process to current process */
+struct child_process * add_child_process(int pid)
+{
+  struct thread *t = thread_current();
+
+  struct child_process *cp = 
+    malloc(sizeof(struct child_process));
+
+  if (!cp)
+    return NULL;
+
+  cp->pid = pid;
+  cp->load_status = NOT_LOADED;
+  cp->wait_status = false;
+  cp->finish_status = false;
+  sema_init(&cp->load_sema, 0);
+  sema_init(&cp->exit_sema, 0);
+  list_push_back(&t->children_list, &cp->elem);
+
+  return cp;
+}
+
+/* Add to file descriptor table of this process */
+int process_add_file(struct file *f)
+{
+  struct thread *t = thread_current();
+  struct process_file *pf = malloc(sizeof(struct process_file));
+  if (!pf) 
+    return ERROR_CODE;
+
+  pf->file = f;
+  pf->fd = t->fd;
+  t->fd++;
+  list_push_back(&t->file_list, &pf->elem);
+
+  return pf->fd;
+}
+
+/* Get a file by fd from this process' file descriptor table */
+struct file* process_get_file(int fd)
+{
+  struct file *result = NULL;
+  struct thread *t = thread_current();
+  struct list_elem *e = NULL;
+  struct process_file *pf = NULL;
+
+  for (e = list_begin(&t->file_list);
+       e != list_end(&t->file_list);
+       e = list_next(e)) {
+    pf = list_entry(e, struct process_file, elem);
+    if (fd == pf->fd)
+      result = pf->file;
+  }
+
+  return result;
+}
+
+/* Close a file by fd, remove it from this process file descriptor table */
+void process_close_file(int fd)
+{
+  struct thread *t = thread_current();
+  struct list_elem *e = NULL;
+  struct process_file *pf = NULL;
+
+  for (e = list_begin(&t->file_list);
+       e != list_end(&t->file_list);
+       e = list_next(e)) {
+    pf = list_entry(e, struct process_file, elem);
+    
+    if (fd == pf->fd || fd == ALL_FILE) {
+      file_close(pf->file);
+      list_remove(&pf->elem);
+      free(pf);
+      if (fd != ALL_FILE)
+	return;
+    }
+  }
 }
