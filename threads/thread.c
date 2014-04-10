@@ -12,6 +12,8 @@
 #include "threads/synch.h"
 #include "threads/vaddr.h"
 #include "userprog/syscall.h"
+#include "devices/timer.h"
+
 #ifdef USERPROG
 #include "userprog/process.h"
 #endif
@@ -24,10 +26,18 @@
 /* 0 for input, 1 for output */
 #define INIT_FD 2
 #define INIT_PARENT -1
+#define INIT_TIME -1
 
 /* List of processes in THREAD_READY state, that is, processes
    that are ready to run but not actually running. */
 static struct list ready_list;
+
+
+/* List of sleeping processes */
+static struct list sleep_list;
+
+/* Wake up ticks */
+static int64_t next_tick_to_awake;
 
 /* List of all processes.  Processes are added to this list
    when they are first scheduled and removed when they exit. */
@@ -76,6 +86,8 @@ static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
 
+
+
 /* Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
    general and it is possible in this case only because loader.S
@@ -98,11 +110,16 @@ thread_init (void)
   list_init (&ready_list);
   list_init (&all_list);
 
+  /* Init sleep list */
+  list_init(&sleep_list);
+  next_tick_to_awake = INIT_TIME;
+
   /* Set up a thread structure for the running thread. */
   initial_thread = running_thread ();
   init_thread (initial_thread, "main", PRI_DEFAULT);
   initial_thread->status = THREAD_RUNNING;
   initial_thread->tid = allocate_tid ();
+  
 }
 
 /* Starts preemptive thread scheduling by enabling interrupts.
@@ -666,3 +683,74 @@ void release_locks(void)
   }
 }
 
+
+void thread_sleep(int64_t ticks)
+{
+  struct thread *t = thread_current();
+
+  /* Disable interrupt */
+  enum intr_level old_level = intr_disable();
+  
+  if (t != idle_thread) {
+    /* Ticks to awake */
+    t->wakeup_ticks = timer_ticks() + ticks;
+    /* Remove from ready queue */
+
+    /* Push to sleep queue */
+    list_push_back(&sleep_list, &t->elem);
+    /* Make it blocked(not running), and schedule */
+    thread_block();
+  }
+
+  /* Enable interrup again */
+  intr_set_level(old_level);
+}
+
+void thread_awake(int64_t ticks)
+{
+  struct thread *cur = thread_current();
+  struct thread *t = NULL;
+  struct list_elem *e = NULL;
+
+  /*
+  for (e = list_begin(&sleep_list);
+       e != list_end(&sleep_list);
+       e = list_next(e)) {
+    t = list_entry(e, struct thread, elem);
+    
+    if (ticks >= t->wakeup_ticks) {
+      list_remove(e);
+      thread_unblock(t);
+    } else
+      update_next_tick_to_awake(t->wakeup_ticks);
+  }
+  */
+  e = list_begin(&sleep_list);
+  while (e != list_end(&sleep_list)) {
+    
+    t = list_entry(e, struct thread, elem);
+
+
+    if (ticks < t->wakeup_ticks) {
+      update_next_tick_to_awake(t->wakeup_ticks);
+      e = list_next(e);
+      continue;
+    }
+
+    list_remove(e);
+    thread_unblock(t);
+    e = list_begin(&sleep_list);
+  }
+}
+
+void update_next_tick_to_awake(int64_t ticks)
+{
+  if (next_tick_to_awake == INIT_TIME ||
+      next_tick_to_awake > ticks)
+    next_tick_to_awake = ticks;
+}
+
+int64_t get_next_tick_to_awake(void)
+{
+  return next_tick_to_awake;
+}
