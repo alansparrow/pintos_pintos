@@ -686,18 +686,34 @@ void release_locks(void)
 
 void thread_sleep(int64_t ticks)
 {
-  struct thread *t = thread_current();
+  struct thread *cur = thread_current();
+  struct thread *t = NULL;
+  struct list_elem *e;
 
   /* Disable interrupt */
   enum intr_level old_level = intr_disable();
   
   if (t != idle_thread) {
     /* Ticks to awake */
-    t->wakeup_ticks = timer_ticks() + ticks;
-    /* Remove from ready queue */
+    cur->wakeup_ticks = timer_ticks() + ticks;
+    /* Update next_tick_to_awake */
+    update_next_tick_to_awake(cur->wakeup_ticks);
 
+    /* Remove from ready queue */
+        
+    for (e = list_begin(&ready_list);
+	 e != list_end(&ready_list);
+	 e = list_next(e)) {
+      t = list_entry(e, struct thread, allelem);
+    
+      if (t->tid == cur->tid) {
+	list_remove(e);
+	break;
+      } 
+    }
+    
     /* Push to sleep queue */
-    list_push_back(&sleep_list, &t->elem);
+    list_push_back(&sleep_list, &cur->elem);
     /* Make it blocked(not running), and schedule */
     thread_block();
   }
@@ -712,19 +728,7 @@ void thread_awake(int64_t ticks)
   struct thread *t = NULL;
   struct list_elem *e = NULL;
 
-  /*
-  for (e = list_begin(&sleep_list);
-       e != list_end(&sleep_list);
-       e = list_next(e)) {
-    t = list_entry(e, struct thread, elem);
-    
-    if (ticks >= t->wakeup_ticks) {
-      list_remove(e);
-      thread_unblock(t);
-    } else
-      update_next_tick_to_awake(t->wakeup_ticks);
-  }
-  */
+
   e = list_begin(&sleep_list);
   while (e != list_end(&sleep_list)) {
     
@@ -732,7 +736,6 @@ void thread_awake(int64_t ticks)
 
 
     if (ticks < t->wakeup_ticks) {
-      update_next_tick_to_awake(t->wakeup_ticks);
       e = list_next(e);
       continue;
     }
