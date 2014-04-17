@@ -209,4 +209,11 @@ void update_next_tick_to_awake(int64_t ticks);
 /* Return thread.c's next_tick_to_awake */
 int64_t get_next_tick_to_awake(void);
 
+/* Test max priority */
+void test_max_priority(void);
+
+/* Compare priority */
+bool cmp_priority(const struct list_elem *a, const struct list_elem *b,
+		  void *aux UNUSED);
+
 #endif /* threads/thread.h */

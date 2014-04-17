@@ -251,6 +251,13 @@ thread_create (const char *name, int priority,
   /* Add to run queue. */
   thread_unblock (t);
 
+  /* There is new thread added, check priority in ready list to
+     decide if current thread must yield the CPU */
+  old_level = intr_disable();
+  test_max_priority();
+  intr_set_level(old_level);
+  
+
   return tid;
 }
 
@@ -287,7 +294,13 @@ thread_unblock (struct thread *t)
 
   old_level = intr_disable ();
   ASSERT (t->status == THREAD_BLOCKED);
-  list_push_back (&ready_list, &t->elem);
+
+  /* Push this thread into ready list.
+     Position: according to its priority value */
+  list_insert_ordered(&ready_list, &t->elem,
+		      (list_less_func *) &cmp_priority,
+		      NULL);
+
   t->status = THREAD_READY;
   intr_set_level (old_level);
 }
@@ -360,8 +373,14 @@ thread_yield (void)
   ASSERT (!intr_context ());
 
   old_level = intr_disable ();
-  if (cur != idle_thread) 
-    list_push_back (&ready_list, &cur->elem);
+  if (cur != idle_thread)  {
+    /* Push this thread into ready list.
+       Position: according to its priority value */
+    list_insert_ordered(&ready_list, &cur->elem,
+			(list_less_func *) &cmp_priority,
+			NULL);
+  }
+
   cur->status = THREAD_READY;
   schedule ();
   intr_set_level (old_level);
@@ -388,7 +407,19 @@ thread_foreach (thread_action_func *func, void *aux)
 void
 thread_set_priority (int new_priority) 
 {
-  thread_current ()->priority = new_priority;
+  enum intr_level old_level = intr_disable();
+
+  struct thread *t_cur = thread_current();
+  int old_priority = t_cur->priority;
+  
+  t_cur->priority = new_priority;
+
+  if (t_cur->priority < old_priority) 
+    test_max_priority();
+
+  intr_set_level(old_level);
+
+
 }
 
 /* Returns the current thread's priority. */
@@ -756,4 +787,36 @@ void update_next_tick_to_awake(int64_t ticks)
 int64_t get_next_tick_to_awake(void)
 {
   return next_tick_to_awake;
+}
+
+
+/* Test max priority */
+void test_max_priority(void)
+{
+  if (list_empty(&ready_list))
+      return;
+
+  struct list_elem *e_front = list_front(&ready_list);
+  struct thread *t_front = list_entry(e_front, struct thread, elem);
+  struct thread *t_cur = thread_current();
+  
+  /* Yield if current thread's priority is smaller than the first one in 
+     ready list */
+  if (t_cur->priority < t_front->priority)
+    thread_yield();
+}
+
+/* Compare priority */
+bool cmp_priority(const struct list_elem *a, const struct list_elem *b,
+		  void *aux UNUSED)
+{
+  bool result = false;
+
+  struct thread *thread_A = list_entry(a, struct thread, elem);
+  struct thread *thread_B = list_entry(b, struct thread, elem);
+  
+  if (thread_A->priority > thread_B->priority)
+    result = true;
+
+  return result;
 }
